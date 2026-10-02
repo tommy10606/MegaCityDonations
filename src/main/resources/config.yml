@@ -1,0 +1,26 @@
+# Tracking only: no permission grants, commands, or payment processing.
+page-size: 8
+
+# Currency code, e.g. USD, CAD, EUR, GBP. Changes display only, not conversion.
+# USD is also the default if this setting is omitted. Amounts use two decimals.
+currency: USD
+
+# Check the latest public stable GitHub release once per server boot.
+update-checker:
+  enabled: true
+
+# repeatable defaults to false if omitted. Permission nodes are hover text only.
+donations:
+  nickname:
+    name: Nickname
+    price: '5.00'
+    repeatable: false
+    permissions:
+      - essentials.nick
+      - essentials.nick.color
+      - essentials.nick.format
+  eff7:
+    name: Eff7
+    price: '10.00'
+    repeatable: true
+    permissions: []

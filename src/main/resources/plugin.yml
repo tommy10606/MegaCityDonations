@@ -1,0 +1,20 @@
+name: MegaCityDonations
+version: '${project.version}'
+main: com.megacitycraft.donations.DonationsPlugin
+api-version: '26.2'
+author: Tommy10606
+website: https://github.com/tommy10606/MegaCityDonations
+description: Configurable donation records and player purchase summaries.
+commands:
+  mydonations:
+    description: View your donations. Operators can view other players and reload.
+    usage: /mydonations [page|player [page]|reload|version]
+  adddonation:
+    description: Record a donation purchase (operator or console only).
+    usage: /adddonation PLAYER DONATIONID
+  removedonation:
+    description: Remove the latest matching purchase (operator or console only).
+    usage: /removedonation PLAYER DONATIONID
+  donation:
+    description: View or edit donation definitions (operator or console only).
+    usage: /donation <list|info|create|rename|price|repeatable|addpermission|removepermission>
