@@ -1,4 +1,4 @@
-# MegaCityDonations 1.0.0
+# MegaCityDonations 1.0.1
 
 A tracking-only donation plugin for Paper 26.2 and Java 25. Players see their
 purchased features, the amount paid for each purchase, and their total donations.
@@ -6,7 +6,7 @@ The plugin does not process payments, grant permissions, or deliver items.
 
 ## Install
 
-Stop the server, place `MegaCityDonations-1.0.0.jar` in `plugins/`, and start it.
+Stop the server, place `MegaCityDonations-1.0.1.jar` in `plugins/`, and start it.
 This plugin can run alongside MegaCityLight. No additional plugins or libraries
 are required. Developer metadata identifies Tommy10606 and links to
 https://github.com/tommy10606/MegaCityDonations.
@@ -171,7 +171,7 @@ Use JDK 25 and Maven 3.9 or newer:
 mvn clean package
 ```
 
-The JAR is `target/MegaCityDonations-1.0.0.jar`. The Maven version supplies the
+The JAR is `target/MegaCityDonations-1.0.1.jar`. The Maven version supplies the
 plugin version automatically. Tests use MockBukkit for Paper 26.2 and cover
 access controls, duplicate rejection, repeat purchases and latest corrections,
 offline players, restart persistence, immutable paid amounts, catalog commands,
@@ -211,7 +211,7 @@ failures and rate limits produce a warning. There are no periodic checks,
 repeating notices, chat notifications, automatic downloads, or installations.
 Donation tracking continues if GitHub is unavailable.
 
-Publish a GitHub Release with a stable version tag such as `v1.0.0` or `v1.0.1`,
+Publish a GitHub Release with a stable version tag such as `v1.0.1` or `v1.0.2`,
 not just a Git tag. Mark the desired stable version as the latest release.
 Drafts and prereleases are not used. Versions are compared numerically. Public
 release checks require no token and need outbound HTTPS to `api.github.com`.
@@ -223,4 +223,19 @@ update-checker:
   enabled: false
 ```
 
-The installed plugin remains version **1.0.0** for this predeployment revision.
+## Changes in 1.0.1
+
+Fixed tab completion and player targeting triggering Minecraft offline-player
+NBT loads and data conversion on the server thread. Older offline identities are
+indexed once in the background from player-data filenames and `usercache.json`.
+Modern `players/data` and legacy `playerdata` directories are supported. Tab
+completion and targeting use in-memory identities only. Players saved in
+`players.yml` remain available immediately; older identities become available
+when the background index finishes. If an old name is no longer cached, use
+the player's UUID or have them join once. No player NBT is read or modified.
+
+`/mydonations version` reports **1.0.1** for OPs and the console. The existing
+boot-only GitHub release check remains enabled by default.
+
+To update, stop the server, remove the old MegaCityDonations JAR, install the
+new JAR, and restart. Keep the plugin folder, config, and player records.

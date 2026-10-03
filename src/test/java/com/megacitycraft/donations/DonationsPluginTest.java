@@ -16,13 +16,21 @@ import org.mockbukkit.mockbukkit.ServerMock;
 import org.mockbukkit.mockbukkit.entity.PlayerMock;
 
 class DonationsPluginTest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path testWorld;
     private ServerMock server;
     private DonationsPlugin plugin;
     private PlayerMock admin;
     private PlayerMock buyer;
 
     @BeforeEach void setUp() {
-        server = MockBukkit.mock();
+        server = MockBukkit.mock(new ServerMock() {
+            @Override public org.bukkit.OfflinePlayer[] getOfflinePlayers() {
+                throw new AssertionError("Commands and tab completion must never scan Bukkit offline players.");
+            }
+        });
+        server.addWorld(new org.mockbukkit.mockbukkit.world.WorldMock() {
+            @Override public java.nio.file.Path getWorldPath() { return testWorld; }
+        });
         var config = YamlConfiguration.loadConfiguration(new java.io.InputStreamReader(
                 java.util.Objects.requireNonNull(DonationsPlugin.class.getResourceAsStream("/config.yml")), java.nio.charset.StandardCharsets.UTF_8));
         config.set("update-checker.enabled", false); // Tests never contact GitHub.
@@ -79,9 +87,31 @@ class DonationsPluginTest {
         assertTrue(drain(buyer).stream().map(this::plain).anyMatch(line -> line.contains("Total donated: €5.00")));
     }
 
+    @Test void tabCompletionUsesSavedOfflineNamesAndNeverLoadsPlayerData() {
+        buyer.disconnect();
+        for (String name : List.of("mydonations", "adddonation", "removedonation")) {
+            var command = plugin.getCommand(name);
+            assertTrue(plugin.onTabComplete(admin, command, name, new String[]{"Bu"}).contains("Buyer"));
+        }
+        run("adddonation Buyer nickname");
+        assertTrue(plugin.onTabComplete(admin, plugin.getCommand("removedonation"), "removedonation",
+                new String[]{"Buyer", "nick"}).contains("nickname"));
+    }
+
+    @Test void indexedHistoricalOfflinePlayerCanBeAssignedWithoutBukkitDataLoads() throws Exception {
+        var id = java.util.UUID.randomUUID();
+        var field = DonationsPlugin.class.getDeclaredField("indexedPlayers");
+        field.setAccessible(true);
+        field.set(plugin, java.util.Map.of(id, "Historical"));
+        run("adddonation Historical nickname");
+        assertEquals(new BigDecimal("5.00"), records().total(id));
+        run("mydonations " + id);
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("Total donated: $5.00")));
+    }
+
     @Test void activeVersionAndWebsiteAreCorrectAndVersionCommandRequiresOp() {
         run("mydonations version");
-        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.equals("MegaCityDonations v1.0.0")));
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.equals("MegaCityDonations v1.0.1")));
         assertEquals("https://github.com/tommy10606/MegaCityDonations", plugin.getPluginMeta().getWebsite());
         assertTrue(server.dispatchCommand(server.getConsoleSender(), "mydonations version"));
         buyer.performCommand("mydonations version");
@@ -152,7 +182,7 @@ class DonationsPluginTest {
     @Test void unknownPlayerIsNotInventedAndUuidAssignmentsWork() throws Exception {
         run("adddonation TypoPlayer feed");
         assertEquals(0, records().purchases(buyer.getUniqueId()).size());
-        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("Unknown player")));
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("Unknown player") || line.contains("still loading")));
         run("adddonation " + buyer.getUniqueId() + " feed");
         assertEquals(1, records().purchases(buyer.getUniqueId()).size());
     }

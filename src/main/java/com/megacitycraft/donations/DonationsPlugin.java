@@ -14,7 +14,6 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
-import org.bukkit.OfflinePlayer;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.ConsoleCommandSender;
@@ -31,6 +30,9 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
     private Catalog catalog;
     private DonationStore store;
     private BukkitTask updateTask;
+    private BukkitTask indexTask;
+    private volatile java.util.Map<UUID, String> indexedPlayers = java.util.Map.of();
+    private volatile boolean indexReady;
     private volatile boolean stopping;
     private record Target(UUID uuid, String name) { }
     private Path configPath() { return getDataFolder().toPath().resolve("config.yml"); }
@@ -38,6 +40,7 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
 
     @Override public void onEnable() {
         stopping = false;
+        indexReady = false;
         saveDefaultConfig();
         try {
             loadFiles();
@@ -53,6 +56,17 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
             command.setTabCompleter(this);
         }
         getServer().getPluginManager().registerEvents(this, this);
+        // Capture Bukkit world paths on the game thread; do all scanning off-thread.
+        var worlds = getServer().getWorlds().stream().map(world -> world.getWorldPath()).toList();
+        var cache = Path.of("usercache.json").toAbsolutePath();
+        indexTask = getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                var loaded = PlayerIndex.load(cache, worlds);
+                if (!stopping) indexedPlayers = loaded;
+            } catch (IOException error) {
+                if (!stopping) getLogger().warning("Offline player index unavailable: " + error.getMessage());
+            } finally { indexReady = true; }
+        });
         if (getConfig().getBoolean("update-checker.enabled", true)) {
             updateTask = getServer().getScheduler().runTaskLaterAsynchronously(this, this::checkForUpdates, 20L);
         }
@@ -61,6 +75,7 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
     @Override public void onDisable() {
         stopping = true;
         if (updateTask != null) updateTask.cancel();
+        if (indexTask != null) indexTask.cancel();
     }
 
     private void checkForUpdates() {
@@ -222,14 +237,14 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
             if (entry.getKey().equals(requestedId) || entry.getValue().name().equalsIgnoreCase(input))
                 matches.put(entry.getKey(), new Target(entry.getKey(), entry.getValue().name()));
         }
-        // Local server records only: no name lookup against Mojang, and no
-        // invented offline UUID for a typo or a player who has never joined.
-        for (OfflinePlayer player : getServer().getOfflinePlayers()) {
-            if ((player.hasPlayedBefore() || player.isOnline()) && (player.getUniqueId().equals(requestedId)
-                    || player.getName() != null && player.getName().equalsIgnoreCase(input)))
-                matches.put(player.getUniqueId(), new Target(player.getUniqueId(), player.getName() == null ? input : player.getName()));
+        for (var entry : indexedPlayers.entrySet()) {
+            if (entry.getKey().equals(requestedId) || entry.getValue().equalsIgnoreCase(input))
+                matches.putIfAbsent(entry.getKey(), new Target(entry.getKey(), entry.getValue()));
         }
-        if (matches.isEmpty()) throw new IllegalArgumentException("Unknown player: " + input + ". They must have joined this server before.");
+        if (matches.isEmpty()) {
+            if (!indexReady) throw new IllegalArgumentException("Offline player index is still loading. Please try again shortly.");
+            throw new IllegalArgumentException("Unknown player: " + input + ". Use their UUID if their name is no longer cached, or have them join once.");
+        }
         if (matches.size() > 1) throw new IllegalArgumentException("More than one UUID matches that name. Use the player's UUID instead.");
         return matches.values().iterator().next();
     }
@@ -348,7 +363,7 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
         var names = new ArrayList<String>();
         for (Player player : getServer().getOnlinePlayers()) names.add(player.getName());
         for (var account : store.accounts().values()) names.add(account.name());
-        for (OfflinePlayer player : getServer().getOfflinePlayers()) if (player.getName() != null && player.hasPlayedBefore()) names.add(player.getName());
+        names.addAll(indexedPlayers.values().stream().filter(name -> !name.contains("-")).toList());
         return names.stream().distinct().sorted(String.CASE_INSENSITIVE_ORDER).toList();
     }
 }
