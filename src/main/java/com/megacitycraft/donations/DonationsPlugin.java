@@ -124,6 +124,8 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
 
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         try {
+            if (Arrays.stream(args).anyMatch(Catalog::hasLineBreak))
+                throw new IllegalArgumentException("Commands must be entered one line at a time. Pasted line breaks are not allowed.");
             switch (command.getName().toLowerCase(Locale.ROOT)) {
                 case "mydonations" -> myDonations(sender, args);
                 case "adddonation", "removedonation" -> recordPurchase(sender, command.getName(), args);
@@ -253,6 +255,21 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
         requireAdmin(sender);
         if (args.length == 0) { catalogHelp(sender); return; }
         String action = args[0].toLowerCase(Locale.ROOT);
+        if (action.equals("activate") || action.equals("deactivate")) {
+            if (args.length != 3) throw new IllegalArgumentException("Usage: /donation " + action + " PLAYER DONATIONID");
+            runPermissionCommands(sender, action, resolve(args[1]), catalog.get(args[2]));
+            return;
+        }
+        if (action.equals("top") || action.equals("leaderboard")) {
+            if (args.length > 2) throw new IllegalArgumentException("Usage: /donation top [PAGE]");
+            showLeaderboard(sender, args.length == 2 ? pageNumber(args[1]) : 1);
+            return;
+        }
+        if (action.equals("total")) {
+            if (args.length != 1) throw new IllegalArgumentException("Usage: /donation total");
+            showGrandTotal(sender);
+            return;
+        }
         if (action.equals("list") && args.length == 1) {
             sender.sendMessage(Component.text("Donation IDs (" + catalog.features.size() + ")", NamedTextColor.AQUA));
             for (var feature : catalog.features.values()) sender.sendMessage(
@@ -268,7 +285,7 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
             sender.sendMessage(Component.text("Donation ID: " + feature.id(), NamedTextColor.AQUA));
             success(sender, "Name: " + feature.name() + " · Price: " + catalog.money(feature.price()));
             success(sender, "Repeatable: " + feature.repeatable());
-            success(sender, "Permission nodes (display only): " + (feature.permissions().isEmpty() ? "None" : String.join(", ", feature.permissions())));
+            success(sender, "Permission nodes (hover and manual activation): " + (feature.permissions().isEmpty() ? "None" : String.join(", ", feature.permissions())));
             return;
         }
         if (args.length < 3) { catalogHelp(sender); return; }
@@ -316,10 +333,62 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
         success(sender, "Saved " + id + ". Changes are active immediately; past payment amounts are unchanged.");
     }
 
+    private void runPermissionCommands(CommandSender sender, String action, Target player, Catalog.Feature feature) {
+        String template = action.equals("activate") ? catalog.activateCommand : catalog.deactivateCommand;
+        if (template.isEmpty()) throw new IllegalArgumentException("Set permission-commands." + action + " in config.yml, then run /mydonations reload.");
+        if (feature.permissions().isEmpty()) throw new IllegalArgumentException("No permission nodes are configured for " + feature.id() + ".");
+        if (template.contains("{player}") && !player.name().matches("[A-Za-z0-9_]{1,16}"))
+            throw new IllegalArgumentException("No valid cached name is available for that player. Have them join once, or use a template with {uuid} instead of {player}.");
+        int submitted = 0;
+        for (String permission : feature.permissions()) {
+            String command = template.replace("{player}", player.name()).replace("{uuid}", player.uuid().toString())
+                    .replace("{permission}", permission);
+            try {
+                if (getServer().dispatchCommand(getServer().getConsoleSender(), command)) submitted++;
+                else getLogger().warning("Permission command was not accepted: " + command);
+            } catch (RuntimeException error) {
+                getLogger().log(Level.WARNING, "Permission command failed: " + command, error);
+            }
+        }
+        String message = "Submitted " + submitted + "/" + feature.permissions().size() + " " + action
+                + " commands for " + player.name() + " (" + feature.id() + "). Check the permission plugin's output for results.";
+        sender.sendMessage(Component.text(message, submitted == feature.permissions().size() ? NamedTextColor.GREEN : NamedTextColor.RED));
+        getLogger().info(sender.getName() + " requested " + action + " for " + player.name() + " (" + player.uuid() + "), "
+                + feature.id() + ": " + submitted + "/" + feature.permissions().size() + " commands accepted.");
+    }
+
+    private void showGrandTotal(CommandSender sender) {
+        sender.sendMessage(Component.text("Grand total donated: ", NamedTextColor.AQUA)
+                .append(Component.text(catalog.money(store.grandTotal()), NamedTextColor.GOLD)));
+    }
+
+    private void showLeaderboard(CommandSender sender, int page) {
+        var donors = store.leaderboard();
+        int pages = Math.max(1, (donors.size() + catalog.pageSize - 1) / catalog.pageSize);
+        if (page > pages) throw new IllegalArgumentException("That page does not exist. Available pages: 1–" + pages);
+        sender.sendMessage(Component.text("♦ Top Donors", NamedTextColor.AQUA));
+        showGrandTotal(sender);
+        int start = (page - 1) * catalog.pageSize;
+        for (int index = start; index < Math.min(start + catalog.pageSize, donors.size()); index++) {
+            var donor = donors.get(index);
+            sender.sendMessage(Component.text((index + 1) + ". ", NamedTextColor.AQUA)
+                    .append(Component.text(donor.name(), NamedTextColor.WHITE))
+                    .append(Component.text(" - ", NamedTextColor.DARK_GRAY))
+                    .append(Component.text(catalog.money(donor.total()), NamedTextColor.GOLD)));
+        }
+        if (donors.isEmpty()) sender.sendMessage(Component.text("No donations recorded yet.", NamedTextColor.GRAY));
+        Component footer = Component.text("Page " + page + "/" + pages, NamedTextColor.GRAY);
+        if (page > 1) footer = Component.text("[‹ Previous] ", NamedTextColor.AQUA)
+                .clickEvent(ClickEvent.runCommand("/donation top " + (page - 1))).append(footer);
+        if (page < pages) footer = footer.append(Component.text(" [Next ›]", NamedTextColor.AQUA)
+                .clickEvent(ClickEvent.runCommand("/donation top " + (page + 1))));
+        sender.sendMessage(footer);
+    }
+
     private String join(String[] args, int start) { return String.join(" ", Arrays.copyOfRange(args, start, args.length)); }
     private void success(CommandSender sender, String message) { sender.sendMessage(Component.text(message, NamedTextColor.GREEN)); }
     private void catalogHelp(CommandSender sender) {
-        for (String usage : List.of("/donation list", "/donation info ID", "/donation create ID PRICE NAME...",
+        for (String usage : List.of("/donation activate PLAYER DONATIONID", "/donation deactivate PLAYER DONATIONID", "/donation top [PAGE]", "/donation total", "/donation list", "/donation info ID", "/donation create ID PRICE NAME...",
                 "/donation rename ID NAME...", "/donation price ID AMOUNT", "/donation repeatable ID true|false",
                 "/donation addpermission ID NODE", "/donation removepermission ID NODE"))
             sender.sendMessage(Component.text(usage, NamedTextColor.YELLOW));
@@ -346,8 +415,17 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
                     }
                 }
             } else if (name.equals("donation")) {
-                if (args.length == 1) choices = List.of("list", "info", "create", "rename", "price", "repeatable", "addpermission", "removepermission");
-                if (args.length == 2 && !args[0].equalsIgnoreCase("create")) choices = new ArrayList<>(catalog.features.keySet());
+                if (args.length == 2 && (args[0].equalsIgnoreCase("activate") || args[0].equalsIgnoreCase("deactivate")))
+                    choices = playerNames();
+                if (args.length == 3 && (args[0].equalsIgnoreCase("activate") || args[0].equalsIgnoreCase("deactivate")))
+                    choices = new ArrayList<>(catalog.features.keySet());
+                if (args.length == 1) choices = List.of("activate", "deactivate", "top", "leaderboard", "total", "list", "info", "create", "rename", "price", "repeatable", "addpermission", "removepermission");
+                if (args.length == 2 && List.of("info", "rename", "price", "repeatable", "addpermission", "removepermission").contains(args[0].toLowerCase(Locale.ROOT)))
+                    choices = new ArrayList<>(catalog.features.keySet());
+                if (args.length == 2 && (args[0].equalsIgnoreCase("top") || args[0].equalsIgnoreCase("leaderboard")))
+                    choices = java.util.stream.IntStream.rangeClosed(1, Math.max(1,
+                            (store.leaderboard().size() + catalog.pageSize - 1) / catalog.pageSize))
+                            .limit(100).mapToObj(Integer::toString).toList();
                 if (args.length == 3 && args[0].equalsIgnoreCase("repeatable")) choices = List.of("true", "false");
                 if (args.length == 3 && args[0].equalsIgnoreCase("removepermission")) {
                     try { choices = catalog.get(args[1]).permissions(); } catch (IllegalArgumentException ignored) { }

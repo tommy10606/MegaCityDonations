@@ -12,6 +12,30 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class StorageTest {
+    @Test void permissionTemplatesDefaultCorrectlyAndRejectInvalidCommands() throws Exception {
+        var yaml = new YamlConfiguration(); yaml.loadFromString("donations: {}\n");
+        var defaults = Catalog.parse(yaml);
+        assertEquals("manuaddp {player} {permission}", defaults.activateCommand);
+        assertEquals("manudelp {player} {permission}", defaults.deactivateCommand);
+        for (Object value : List.of("manuaddp {player}", "manuaddp {permission}", "manuaddp {player} {permission}\nstop", List.of("cmd"))) {
+            yaml.set("permission-commands.activate", value);
+            assertThrows(IllegalArgumentException.class, () -> Catalog.parse(yaml));
+        }
+        yaml.set("permission-commands.activate", "/customperms {uuid} {permission}");
+        assertEquals("customperms {uuid} {permission}", Catalog.parse(yaml).activateCommand);
+        yaml.set("permission-commands.activate", "");
+        assertEquals("", Catalog.parse(yaml).activateCommand);
+    }
+
+    @Test void multilineCatalogNamesAreRejected() throws Exception {
+        var yaml = new YamlConfiguration();
+        yaml.loadFromString("donations:\n  tool:\n    name: Tool\n    price: '9.00'\n");
+        for (String name : List.of("Tool\nOther", "Tool\rOther", "Tool\u2028Other", "Tool\u0085Other")) {
+            yaml.set("donations.tool.name", name);
+            assertThrows(IllegalArgumentException.class, () -> Catalog.parse(yaml));
+        }
+    }
+
     @Test void currencyDefaultsToUsdAndAcceptsSupportedCodes() throws Exception {
         var yaml = new YamlConfiguration(); yaml.loadFromString("donations: {}\n");
         assertEquals("$5.00", Catalog.parse(yaml).money(Catalog.amount("5")));

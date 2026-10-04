@@ -1,12 +1,13 @@
-# MegaCityDonations 1.0.1
+# MegaCityDonations 1.0.2
 
-A tracking-only donation plugin for Paper 26.2 and Java 25. Players see their
+A donation tracking plugin for Paper 26.2 and Java 25. Players see their
 purchased features, the amount paid for each purchase, and their total donations.
-The plugin does not process payments, grant permissions, or deliver items.
+The plugin tracks payments and supports explicit operator-run permission activation.
+It does not process payments. Recording or removing a purchase never runs commands automatically.
 
 ## Install
 
-Stop the server, place `MegaCityDonations-1.0.1.jar` in `plugins/`, and start it.
+Stop the server, place `MegaCityDonations-1.0.2.jar` in `plugins/`, and start it.
 This plugin can run alongside MegaCityLight. No additional plugins or libraries
 are required. Developer metadata identifies Tommy10606 and links to
 https://github.com/tommy10606/MegaCityDonations.
@@ -55,6 +56,11 @@ records requires neither OP nor a permission node.
 | `/mydonations version` | Show the active plugin version (OP/console only). |
 | `/adddonation PLAYER DONATIONID` | Record one purchase using that ID's current price. |
 | `/removedonation PLAYER DONATIONID` | Remove the most recent matching purchase and subtract its original amount. |
+| `/donation activate PLAYER DONATIONID` | Run the activation template as console for each listed permission node. |
+| `/donation deactivate PLAYER DONATIONID` | Run the deactivation template as console for each listed permission node. |
+| `/donation top [PAGE]` | Rank players by recorded total and show the grand total (OP/console only). |
+| `/donation leaderboard [PAGE]` | Alias for `/donation top`. |
+| `/donation total` | Grand total recorded across all players (OP/console only). |
 | `/donation list` | List every ID as `ID - $AMOUNT - Repeatable/Not Repeatable`. |
 | `/donation info ID` | Show name, price, repeatability, and permission nodes. |
 | `/donation create ID PRICE NAME...` | Create an ID with an explicit `repeatable: false` and empty permission list. |
@@ -120,8 +126,8 @@ donations:
 IDs use lowercase letters, numbers, underscores, or hyphens, up to 64 characters.
 Prices are nonnegative values in the configured currency with at most two decimal places. Quote prices
 in YAML as shown above. `repeatable` defaults to false when omitted. Page size
-must be a whole number from 1 to 20. Permission lists are display information,
-not an assertion that the player currently has those permissions.
+must be a whole number from 1 to 20. Permission lists supply hover information and the nodes used by explicit activation/deactivation.
+They do not verify the player currently has those permissions.
 
 ## Currency display
 
@@ -171,7 +177,7 @@ Use JDK 25 and Maven 3.9 or newer:
 mvn clean package
 ```
 
-The JAR is `target/MegaCityDonations-1.0.1.jar`. The Maven version supplies the
+The JAR is `target/MegaCityDonations-1.0.2.jar`. The Maven version supplies the
 plugin version automatically. Tests use MockBukkit for Paper 26.2 and cover
 access controls, duplicate rejection, repeat purchases and latest corrections,
 offline players, restart persistence, immutable paid amounts, catalog commands,
@@ -223,6 +229,83 @@ update-checker:
   enabled: false
 ```
 
+## Explicit permission activation and deactivation
+
+These commands require OP or console access:
+
+```text
+/donation activate PLAYER DONATIONID
+/donation deactivate PLAYER DONATIONID
+```
+
+They execute one console command for every permission node listed for that
+ID in the live catalog. Configure the templates in `config.yml`:
+
+```yaml
+permission-commands:
+  activate: 'manuaddp {player} {permission}'
+  deactivate: 'manudelp {player} {permission}'
+```
+
+These GroupManager-style commands are also the defaults when the settings
+are absent. Change the templates to your permission plugin's documented
+commands, then run `/mydonations reload`. No permission plugin is bundled.
+An empty string disables an action. Each template is a single command string;
+use `{player}` for the local player name, `{uuid}` for their UUID, and
+`{permission}` for the node. Templates need `{permission}` and either
+`{player}` or `{uuid}`. A leading slash is optional and removed automatically.
+Permission nodes, including any leading minus sign, are passed literally.
+
+For example, a `pv1` definition listing `playervaults.amount.1` makes
+`/donation activate Tommy10606 pv1` submit
+`manuaddp Tommy10606 playervaults.amount.1` as console. Deactivation submits
+`manudelp Tommy10606 playervaults.amount.1`. Use the exact node spelling from
+your permission plugin; MegaCityDonations does not correct node names.
+
+Activation and deactivation are separate from payment tracking. They neither
+require nor create a recorded purchase, change payment totals, nor mark a
+purchase active/inactive. `/adddonation` and `/removedonation` still only
+change records. Running an action again submits the commands again. An ID
+with no nodes reports that nothing is configured. Targets must be known local
+players. Whether commands support offline players depends on the permission
+plugin; name templates require a cached valid player name, while UUID templates
+can target known UUIDs without a cached name.
+
+The plugin reports how many commands were accepted for dispatch, and logs the
+operator, target, ID, and dispatch count. A permission plugin can accept a
+command but report its own error, so inspect its output to confirm changes.
+Partial failures are reported and are not rolled back. Templates are never
+executed on boot, reload, purchase assignment, or purchase removal.
+
+## Donation leaderboard and grand total
+
+Run `/donation top` or `/donation top 2` to see players sorted by the sum of
+payments in `players.yml`, highest first. `/donation leaderboard` is an alias.
+Offline players are included. Players with zero totals are omitted from the
+ranking. Ties sort by name, then UUID; displayed positions are sequential.
+Pages use the existing `page-size` setting and clickable Previous/Next links.
+The grand total across every player's records is shown on each page; use
+`/donation total` to show it alone. Both commands require OP or console access.
+
+Totals use original recorded payment amounts, include repeat purchases, and
+reflect corrections immediately. Catalog price changes do not rewrite them.
+Manual changes to `players.yml` take effect after `/mydonations reload`.
+All amounts use the configured currency. These are tracking totals, not a
+payment-provider balance or verification of received payments.
+
+## Changes in 1.0.2
+
+Added the operator-only leaderboard, grand total, and explicit configurable
+permission activation/deactivation commands. Names in the
+catalog must be one line, and commands containing pasted line breaks are
+rejected before any changes are made. Enter console commands individually.
+If a previous bulk paste corrupted a catalog name, correct that `name` in
+`config.yml` before upgrading. Existing malformed catalog names are reported
+rather than silently truncated. Editing a purchase's name in `players.yml`
+does not override the current catalog's display name.
+
+`/mydonations version` now reports **1.0.2**.
+
 ## Changes in 1.0.1
 
 Fixed tab completion and player targeting triggering Minecraft offline-player
@@ -234,7 +317,7 @@ completion and targeting use in-memory identities only. Players saved in
 when the background index finishes. If an old name is no longer cached, use
 the player's UUID or have them join once. No player NBT is read or modified.
 
-`/mydonations version` reports **1.0.1** for OPs and the console. The existing
+`/mydonations version` was verified for OPs and the console in this release. The existing
 boot-only GitHub release check remains enabled by default.
 
 To update, stop the server, remove the old MegaCityDonations JAR, install the

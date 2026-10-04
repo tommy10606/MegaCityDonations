@@ -18,10 +18,14 @@ final class Catalog {
     final Map<String, Feature> features;
     final int pageSize;
     final Currency currency;
+    final String activateCommand;
+    final String deactivateCommand;
     private final YamlConfiguration yaml;
 
     private Catalog(YamlConfiguration yaml) {
         this.yaml = yaml;
+        activateCommand = commandTemplate(yaml, "activate", "manuaddp {player} {permission}");
+        deactivateCommand = commandTemplate(yaml, "deactivate", "manudelp {player} {permission}");
         try {
             currency = Currency.getInstance(yaml.getString("currency", "USD").toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException error) {
@@ -40,6 +44,7 @@ final class Catalog {
             if (feature == null) throw new IllegalArgumentException("Invalid definition for " + id);
             String name = feature.getString("name", id);
             if (name.isBlank()) throw new IllegalArgumentException("Feature names cannot be empty: " + id);
+            if (hasLineBreak(name)) throw new IllegalArgumentException("Feature names must be one line. Fix donations." + id + ".name in config.yml.");
             if (!feature.contains("price")) throw new IllegalArgumentException("Missing price for " + id);
             BigDecimal price = amount(feature.get("price").toString());
             if (feature.contains("repeatable") && !feature.isBoolean("repeatable"))
@@ -69,6 +74,23 @@ final class Catalog {
     }
     void save(Path file) throws IOException { FilesSupport.write(file, yaml); }
 
+    private static String commandTemplate(YamlConfiguration yaml, String action, String fallback) {
+        String path = "permission-commands." + action;
+        if (yaml.contains(path) && !yaml.isString(path)) throw new IllegalArgumentException(path + " must be a command string.");
+        String template = yaml.getString(path, fallback).trim();
+        if (template.isEmpty()) return ""; // Explicitly disable an action.
+        if (hasLineBreak(template) || template.codePoints().anyMatch(Character::isISOControl))
+            throw new IllegalArgumentException(path + " must contain one command on one line.");
+        if (template.startsWith("/")) template = template.substring(1);
+        if (!template.contains("{permission}") || !(template.contains("{player}") || template.contains("{uuid}")))
+            throw new IllegalArgumentException(path + " needs {permission} and {player} or {uuid} placeholders.");
+        return template;
+    }
+
+    static boolean hasLineBreak(String input) {
+        return input.codePoints().anyMatch(value -> value == '\n' || value == '\r' || value == 0x85
+                || value == 0x2028 || value == 0x2029 || value == 0x0B || value == 0x0C);
+    }
     static String normalizeId(String input) {
         String id = input.toLowerCase(Locale.ROOT);
         if (!id.matches("[a-z0-9][a-z0-9_-]{0,63}"))
@@ -76,7 +98,7 @@ final class Catalog {
         return id;
     }
     static String permission(String input) {
-        if (input.isBlank() || input.chars().anyMatch(Character::isWhitespace))
+        if (input.isBlank() || hasLineBreak(input) || input.codePoints().anyMatch(value -> Character.isWhitespace(value) || Character.isISOControl(value)))
             throw new IllegalArgumentException("A permission node cannot be empty or contain spaces.");
         return input;
     }

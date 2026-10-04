@@ -57,6 +57,10 @@ class DonationsPluginTest {
         while ((message = player.nextComponentMessage()) != null) messages.add(message);
         return messages;
     }
+    private boolean hasClick(Component message, String command) {
+        return net.kyori.adventure.text.event.ClickEvent.runCommand(command).equals(message.clickEvent())
+                || message.children().stream().anyMatch(child -> hasClick(child, command));
+    }
     private String plain(Component message) { return PlainTextComponentSerializer.plainText().serialize(message); }
 
     @Test void shippedCatalogHasOnlyRequestedIdsPermissionsAndRepeatability() {
@@ -109,9 +113,147 @@ class DonationsPluginTest {
         assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("Total donated: $5.00")));
     }
 
+    @Test void leaderboardRanksOfflineDonorsAndBreaksTiesByName() throws Exception {
+        run("adddonation Admin nickname");
+        run("adddonation Buyer feed");
+        var old = server.addPlayer("OldDonor");
+        run("adddonation OldDonor eff7");
+        run("adddonation OldDonor eff7");
+        old.disconnect(); drain(admin);
+        run("donation top");
+        var lines = drain(admin).stream().map(this::plain).toList();
+        assertTrue(lines.contains("Grand total donated: $30.00"));
+        assertTrue(lines.contains("1. OldDonor - $20.00"));
+        assertTrue(lines.contains("2. Admin - $5.00"));
+        assertTrue(lines.contains("3. Buyer - $5.00"));
+        assertTrue(server.dispatchCommand(server.getConsoleSender(), "donation top"));
+        run("removedonation OldDonor eff7"); drain(admin);
+        run("donation total");
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.equals("Grand total donated: $20.00")));
+        assertEquals(1, records().purchases(old.getUniqueId()).size());
+    }
+
+    @Test void leaderboardPaginationAndTotalReflectManuallyReloadedRecordsAndCurrency() throws Exception {
+        run("adddonation Admin nickname"); run("adddonation Buyer feed");
+        var recordsPath = plugin.getDataFolder().toPath().resolve("players.yml");
+        var yaml = FilesSupport.read(recordsPath);
+        var purchase = new java.util.LinkedHashMap<String, Object>();
+        yaml.getMapList("players." + buyer.getUniqueId() + ".purchases").getFirst()
+                .forEach((key, value) -> purchase.put(key.toString(), value));
+        purchase.put("paid", "17.25");
+        yaml.set("players." + buyer.getUniqueId() + ".purchases", List.of(purchase));
+        FilesSupport.write(recordsPath, yaml);
+        var configPath = plugin.getDataFolder().toPath().resolve("config.yml");
+        var config = FilesSupport.read(configPath);
+        config.set("page-size", 1); config.set("currency", "EUR"); FilesSupport.write(configPath, config);
+        run("mydonations reload"); drain(admin);
+        run("donation top");
+        var messages = drain(admin);
+        assertTrue(messages.stream().map(this::plain).anyMatch(line -> line.equals("1. Buyer - €17.25")));
+        assertTrue(messages.stream().map(this::plain).anyMatch(line -> line.equals("Grand total donated: €22.25")));
+        assertTrue(messages.stream().anyMatch(message -> hasClick(message, "/donation top 2")));
+        run("donation leaderboard 2");
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.equals("2. Admin - €5.00")));
+        run("donation top 3");
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("does not exist")));
+    }
+
+    @Test void leaderboardAndTotalAreOpOnlyAndHandleEmptyRecords() {
+        for (String command : List.of("donation top", "donation leaderboard", "donation total")) {
+            assertTrue(buyer.performCommand(command));
+            assertTrue(drain(buyer).stream().map(this::plain).anyMatch(line -> line.contains("Only operators")));
+        }
+        run("donation top");
+        var lines = drain(admin).stream().map(this::plain).toList();
+        assertTrue(lines.contains("No donations recorded yet."));
+        assertTrue(lines.contains("Grand total donated: $0.00"));
+        assertTrue(server.dispatchCommand(server.getConsoleSender(), "donation total"));
+        assertTrue(plugin.onTabComplete(admin, plugin.getCommand("donation"), "donation", new String[]{"to"}).containsAll(List.of("top", "total")));
+        assertTrue(plugin.onTabComplete(buyer, plugin.getCommand("donation"), "donation", new String[]{""}).isEmpty());
+    }
+
+    @Test void pastedMultilineCommandsCannotChangeCatalog() throws Exception {
+        var path = plugin.getDataFolder().toPath().resolve("config.yml");
+        String before = Files.readString(path);
+        for (String action : List.of("create", "rename")) {
+            String[] args = action.equals("create") ? new String[]{"create", "bad", "10", "Vault\ndonation create evil 1 Evil"}
+                    : new String[]{"rename", "nickname", "Vault\r\ndonation create evil 1 Evil"};
+            plugin.onCommand(admin, plugin.getCommand("donation"), "donation", args);
+            assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("one line at a time")));
+            assertEquals(before, Files.readString(path));
+        }
+    }
+
+    private List<String> captureConsoleCommands(String name) {
+        var calls = new ArrayList<String>();
+        server.getCommandMap().register("test", new org.bukkit.command.Command(name) {
+            @Override public boolean execute(org.bukkit.command.CommandSender sender, String label, String[] args) {
+                assertInstanceOf(org.bukkit.command.ConsoleCommandSender.class, sender);
+                calls.add(String.join(" ", args));
+                return true;
+            }
+        });
+        return calls;
+    }
+
+    @Test void explicitActivationAndDeactivationRunEachNodeAsConsoleWithoutChangingPayments() throws Exception {
+        var added = captureConsoleCommands("manuaddp");
+        var removed = captureConsoleCommands("manudelp");
+        run("donation addpermission nickname -example.denied");
+        run("adddonation Buyer nickname");
+        assertTrue(added.isEmpty());
+        buyer.disconnect();
+        var file = plugin.getDataFolder().toPath().resolve("players.yml");
+        String before = Files.readString(file);
+        run("donation activate Buyer nickname");
+        assertEquals(List.of("Buyer essentials.nick", "Buyer essentials.nick.color", "Buyer essentials.nick.format", "Buyer -example.denied"), added);
+        run("donation deactivate Buyer nickname");
+        assertEquals(added, removed);
+        assertEquals(before, Files.readString(file));
+        run("removedonation Buyer nickname");
+        assertEquals(4, removed.size()); // Removal tracks payments only.
+    }
+
+    @Test void permissionActionsAreOpOnlyAndTemplatesCanBeChangedAndReloaded() throws Exception {
+        var calls = captureConsoleCommands("customperms");
+        for (String command : List.of("donation activate Buyer nickname", "donation deactivate Buyer nickname")) {
+            buyer.performCommand(command);
+            assertTrue(drain(buyer).stream().map(this::plain).anyMatch(line -> line.contains("Only operators")));
+        }
+        var path = plugin.getDataFolder().toPath().resolve("config.yml");
+        var yaml = FilesSupport.read(path);
+        yaml.set("permission-commands.activate", "customperms grant {uuid} {permission}");
+        yaml.set("permission-commands.deactivate", "customperms revoke {player} {permission}");
+        FilesSupport.write(path, yaml); run("mydonations reload");
+        assertTrue(server.dispatchCommand(server.getConsoleSender(), "donation activate Buyer feed"));
+        run("donation deactivate Buyer feed");
+        assertEquals(List.of("grant " + buyer.getUniqueId() + " essentials.feed", "revoke Buyer essentials.feed"), calls);
+        assertEquals(0, records().purchases(buyer.getUniqueId()).size());
+        assertTrue(plugin.onTabComplete(admin, plugin.getCommand("donation"), "donation", new String[]{"activate", "Bu"}).contains("Buyer"));
+        assertTrue(plugin.onTabComplete(admin, plugin.getCommand("donation"), "donation", new String[]{"deactivate", "Buyer", "nick"}).contains("nickname"));
+    }
+
+    @Test void permissionActionsReportMissingNodesDisabledActionsAndUnavailableCommands() throws Exception {
+        var calls = captureConsoleCommands("manuaddp");
+        run("donation activate Buyer eff7");
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("No permission nodes")));
+        assertTrue(calls.isEmpty());
+        var path = plugin.getDataFolder().toPath().resolve("config.yml");
+        var yaml = FilesSupport.read(path); yaml.set("permission-commands.activate", "");
+        FilesSupport.write(path, yaml); run("mydonations reload"); drain(admin);
+        run("donation activate Buyer nickname");
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("Set permission-commands.activate")));
+        yaml.set("permission-commands.activate", "missingpermissionplugin {player} {permission}");
+        FilesSupport.write(path, yaml); run("mydonations reload"); drain(admin);
+        run("donation activate Buyer feed");
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("Submitted 0/1")));
+        assertTrue(calls.isEmpty());
+        assertEquals(0, records().purchases(buyer.getUniqueId()).size());
+    }
+
     @Test void activeVersionAndWebsiteAreCorrectAndVersionCommandRequiresOp() {
         run("mydonations version");
-        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.equals("MegaCityDonations v1.0.1")));
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.equals("MegaCityDonations v1.0.2")));
         assertEquals("https://github.com/tommy10606/MegaCityDonations", plugin.getPluginMeta().getWebsite());
         assertTrue(server.dispatchCommand(server.getConsoleSender(), "mydonations version"));
         buyer.performCommand("mydonations version");

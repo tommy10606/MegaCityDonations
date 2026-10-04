@@ -1,4 +1,4 @@
-# Tracking only: no permission grants, commands, or payment processing.
+# Donation tracking with explicit operator-run permission activation commands.
 page-size: 8
 
 # Currency code, e.g. USD, CAD, EUR, GBP. Changes display only, not conversion.
@@ -9,7 +9,16 @@ currency: USD
 update-checker:
   enabled: true
 
-# repeatable defaults to false if omitted. Permission nodes are hover text only.
+# Run once per configured permission node, as console, only on explicit
+# /donation activate or /donation deactivate. No automatic commands on add/remove.
+# Change these templates for your permission plugin; {uuid} is also supported.
+# Commands have no leading slash. An empty string disables that action.
+permission-commands:
+  activate: 'manuaddp {player} {permission}'
+  deactivate: 'manudelp {player} {permission}'
+
+# repeatable defaults to false if omitted. Nodes appear in hover text and
+# are also passed to the explicit activation/deactivation commands.
 donations:
   nickname:
     name: Nickname

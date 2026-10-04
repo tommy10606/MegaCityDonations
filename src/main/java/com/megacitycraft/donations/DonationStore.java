@@ -63,6 +63,19 @@ final class DonationStore {
     BigDecimal total(UUID player) {
         return purchases(player).stream().map(Purchase::paid).reduce(new BigDecimal("0.00"), BigDecimal::add);
     }
+    record Donor(UUID uuid, String name, BigDecimal total) { }
+    BigDecimal grandTotal() {
+        return accounts.keySet().stream().map(this::total).reduce(new BigDecimal("0.00"), BigDecimal::add);
+    }
+    List<Donor> leaderboard() {
+        return accounts.entrySet().stream()
+                .map(entry -> new Donor(entry.getKey(), entry.getValue().name(), total(entry.getKey())))
+                .filter(donor -> donor.total().signum() > 0)
+                .sorted(java.util.Comparator.comparing(Donor::total).reversed()
+                        .thenComparing(Donor::name, String.CASE_INSENSITIVE_ORDER)
+                        .thenComparing(Donor::uuid))
+                .toList();
+    }
     void remember(UUID id, String name) throws IOException {
         Account existing = accounts.get(id);
         if (existing != null && existing.name().equals(name)) return;

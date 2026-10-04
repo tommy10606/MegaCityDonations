@@ -16,5 +16,5 @@ commands:
     description: Remove the latest matching purchase (operator or console only).
     usage: /removedonation PLAYER DONATIONID
   donation:
-    description: View or edit donation definitions (operator or console only).
-    usage: /donation <list|info|create|rename|price|repeatable|addpermission|removepermission>
+    description: View donation totals, top donors, activate permissions, or edit definitions (operator or console only).
+    usage: /donation <activate PLAYER ID|deactivate PLAYER ID|top [page]|total|list|info|create|rename|price|repeatable|addpermission|removepermission>
