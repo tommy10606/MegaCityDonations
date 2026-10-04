@@ -1,4 +1,4 @@
-# MegaCityDonations 1.0.2
+# MegaCityDonations 1.0.3
 
 A donation tracking plugin for Paper 26.2 and Java 25. Players see their
 purchased features, the amount paid for each purchase, and their total donations.
@@ -7,7 +7,7 @@ It does not process payments. Recording or removing a purchase never runs comman
 
 ## Install
 
-Stop the server, place `MegaCityDonations-1.0.2.jar` in `plugins/`, and start it.
+Stop the server, place `MegaCityDonations-1.0.3.jar` in `plugins/`, and start it.
 This plugin can run alongside MegaCityLight. No additional plugins or libraries
 are required. Developer metadata identifies Tommy10606 and links to
 https://github.com/tommy10606/MegaCityDonations.
@@ -54,7 +54,7 @@ records requires neither OP nor a permission node.
 | `/mydonations PLAYER [PAGE]` | View another player's purchases and total. |
 | `/mydonations reload` | Reload the catalog and saved player records. |
 | `/mydonations version` | Show the active plugin version (OP/console only). |
-| `/adddonation PLAYER DONATIONID` | Record one purchase using that ID's current price. |
+| `/adddonation PLAYER DONATIONID [--override]` | Record one purchase; `--override` skips prerequisite checks only. |
 | `/removedonation PLAYER DONATIONID` | Remove the most recent matching purchase and subtract its original amount. |
 | `/donation activate PLAYER DONATIONID` | Run the activation template as console for each listed permission node. |
 | `/donation deactivate PLAYER DONATIONID` | Run the deactivation template as console for each listed permission node. |
@@ -70,6 +70,8 @@ records requires neither OP nor a permission node.
 | `/donation repeatable ID false` | Reject future duplicate assignments. |
 | `/donation addpermission ID NODE` | Add a permission node to the hover list. |
 | `/donation removepermission ID NODE` | Remove a permission node from the hover list. |
+| `/donation adddependency ID REQUIRED_ID` | Require a recorded purchase of another donation ID. |
+| `/donation removedependency ID REQUIRED_ID` | Remove that prerequisite. |
 
 Catalog commands save to `config.yml` and apply immediately, without a reload.
 Console commands use the same syntax, normally without the initial slash.
@@ -177,7 +179,7 @@ Use JDK 25 and Maven 3.9 or newer:
 mvn clean package
 ```
 
-The JAR is `target/MegaCityDonations-1.0.2.jar`. The Maven version supplies the
+The JAR is `target/MegaCityDonations-1.0.3.jar`. The Maven version supplies the
 plugin version automatically. Tests use MockBukkit for Paper 26.2 and cover
 access controls, duplicate rejection, repeat purchases and latest corrections,
 offline players, restart persistence, immutable paid amounts, catalog commands,
@@ -262,9 +264,10 @@ For example, a `pv1` definition listing `playervaults.amount.1` makes
 `manudelp Tommy10606 playervaults.amount.1`. Use the exact node spelling from
 your permission plugin; MegaCityDonations does not correct node names.
 
-Activation and deactivation are separate from payment tracking. They neither
-require nor create a recorded purchase, change payment totals, nor mark a
-purchase active/inactive. `/adddonation` and `/removedonation` still only
+Activation and deactivation are separate from payment tracking. They never create a recorded purchase, change payment totals, or mark a
+purchase active/inactive. Activation requires that the donation ID itself is
+already assigned to the target player. Deactivation does not require a
+recorded purchase, so it remains usable for cleanup after removal. `/adddonation` and `/removedonation` still only
 change records. Running an action again submits the commands again. An ID
 with no nodes reports that nothing is configured. Targets must be known local
 players. Whether commands support offline players depends on the permission
@@ -276,6 +279,78 @@ operator, target, ID, and dispatch count. A permission plugin can accept a
 command but report its own error, so inspect its output to confirm changes.
 Partial failures are reported and are not rolled back. Templates are never
 executed on boot, reload, purchase assignment, or purchase removal.
+
+## Donation purchase dependencies
+
+Set `requires` under an ID in `config.yml`, then run `/mydonations reload`:
+
+```yaml
+donations:
+  pv1:
+    name: Player Vault 1
+    price: '10.00'
+    repeatable: false
+    permissions: [playervaults.amount.1]
+    requires: []
+  pv2:
+    name: Player Vault 2
+    price: '9.00'
+    repeatable: false
+    permissions: [playervaults.amount.2]
+    requires: [pv1]
+```
+
+This example is documentation only; the bundled defaults remain `nickname`
+and `eff7`. `/adddonation PLAYER pv2` requires a saved purchase of `pv1`.
+Every ID listed in `requires` must be present in that player's purchase
+records. The checks use UUID records and work for offline players. At least
+one purchase of each prerequisite is sufficient, including repeatable IDs.
+An omitted or empty list means no prerequisites. New IDs created by command
+write `requires: []` as well as `repeatable: false`.
+
+Operators and the console can manage prerequisites immediately with:
+
+```text
+/donation adddependency pv2 pv1
+/donation removedependency pv2 pv1
+/donation info pv2
+```
+
+The first ID is the donation being restricted; the second is the required
+purchase. Info lists every prerequisite. Unknown IDs, self-dependencies,
+and cycles are rejected before saving or replacing the live configuration.
+Remove references to an ID before deleting its catalog definition.
+
+For migration of previous donors, explicitly bypass prerequisites with:
+
+```text
+/adddonation PLAYER DONATIONID --override
+```
+
+The override is OP/console only, is logged as `[DEPENDENCY OVERRIDE]`, and
+skips only the prerequisite check. It still rejects duplicate assignments
+unless `repeatable: true`, and records the catalog's current price as usual.
+It does not assign the missing prerequisites or run permission commands.
+Invalid flags are rejected. There is no global bypass setting.
+
+Existing purchases remain untouched when dependencies change. Corrections
+may remove a prerequisite without erasing a dependent purchase or revoking
+permissions. Future assignments check the currently recorded prerequisites.
+Only explicitly listed IDs are checked; prerequisites are not recursively
+rechecked against old purchases. Activation instead checks ownership of the
+ID itself, so migrated assignments can activate normally. Activation has no
+`--override` option. Deactivation remains available after records are removed.
+Direct manual edits to `players.yml` are not retroactively dependency-checked;
+reload preserves historical records and original payment amounts.
+
+## Changes in 1.0.3
+
+- Added configurable prerequisite donation IDs and commands to add/remove them.
+- Rejects missing references, self-dependencies, and circular dependencies.
+- Added OP/console-only `--override` on `/adddonation` for historical migrations.
+- Activation now requires the target donation ID to be assigned to the player.
+- Existing records, totals, deactivation cleanup, and duplicate rules are preserved.
+- `/mydonations version` reports **1.0.3**.
 
 ## Donation leaderboard and grand total
 
@@ -304,7 +379,7 @@ If a previous bulk paste corrupted a catalog name, correct that `name` in
 rather than silently truncated. Editing a purchase's name in `players.yml`
 does not override the current catalog's display name.
 
-`/mydonations version` now reports **1.0.2**.
+`/mydonations version` was updated to **1.0.2** in that release.
 
 ## Changes in 1.0.1
 

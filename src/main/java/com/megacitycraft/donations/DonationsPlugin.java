@@ -213,14 +213,16 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
 
     private void recordPurchase(CommandSender sender, String command, String[] args) throws IOException {
         requireAdmin(sender);
-        if (args.length != 2) throw new IllegalArgumentException("Usage: /" + command + " PLAYER DONATIONID");
+        boolean adding = command.equalsIgnoreCase("adddonation");
+        boolean override = adding && args.length == 3 && args[2].equalsIgnoreCase("--override");
+        if (args.length != 2 && !override) throw new IllegalArgumentException("Usage: /" + command + " PLAYER DONATIONID" + (adding ? " [--override]" : ""));
         Target player = resolve(args[0]);
         if (command.equalsIgnoreCase("adddonation")) {
             var feature = catalog.get(args[1]);
-            store.add(player.uuid(), player.name(), feature);
+            store.add(player.uuid(), player.name(), feature, override);
             success(sender, "Recorded " + feature.name() + " (" + feature.id() + ") for " + player.name()
-                    + ": " + catalog.money(feature.price()) + ". Total: " + catalog.money(store.total(player.uuid())));
-            getLogger().info(sender.getName() + " added " + feature.id() + " for " + player.name() + " (" + player.uuid() + "): " + catalog.money(feature.price()));
+                    + ": " + catalog.money(feature.price()) + ". Total: " + catalog.money(store.total(player.uuid())) + (override ? " (Dependency override used.)" : ""));
+            getLogger().info(sender.getName() + " added " + feature.id() + " for " + player.name() + " (" + player.uuid() + "): " + catalog.money(feature.price()) + (override ? " [DEPENDENCY OVERRIDE]" : ""));
         } else {
             var removed = store.removeLatest(player.uuid(), player.name(), args[1]);
             success(sender, "Removed the latest " + removed.donationId() + " purchase for " + player.name()
@@ -285,11 +287,12 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
             sender.sendMessage(Component.text("Donation ID: " + feature.id(), NamedTextColor.AQUA));
             success(sender, "Name: " + feature.name() + " · Price: " + catalog.money(feature.price()));
             success(sender, "Repeatable: " + feature.repeatable());
+            success(sender, "Requires (all): " + (feature.requires().isEmpty() ? "None" : String.join(", ", feature.requires())));
             success(sender, "Permission nodes (hover and manual activation): " + (feature.permissions().isEmpty() ? "None" : String.join(", ", feature.permissions())));
             return;
         }
         if (args.length < 3) { catalogHelp(sender); return; }
-        if (!List.of("create", "rename", "price", "repeatable", "addpermission", "removepermission").contains(action)) {
+        if (!List.of("create", "rename", "price", "repeatable", "addpermission", "removepermission", "adddependency", "removedependency").contains(action)) {
             catalogHelp(sender); return;
         }
         // Preserve manual edits already on disk when a catalog command saves.
@@ -304,6 +307,7 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
             next.set(path + ".name", join(args, 3));
             next.set(path + ".repeatable", false);
             next.set(path + ".permissions", List.of());
+            next.set(path + ".requires", List.of());
         } else {
             var feature = current.get(id);
             if (!action.equals("rename") && args.length != 3)
@@ -315,6 +319,16 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
                     if (!args[2].equalsIgnoreCase("true") && !args[2].equalsIgnoreCase("false"))
                         throw new IllegalArgumentException("Usage: /donation repeatable ID true|false");
                     next.set(path + ".repeatable", Boolean.parseBoolean(args[2]));
+                }
+                case "adddependency", "removedependency" -> {
+                    String required = Catalog.normalizeId(args[2]);
+                    List<String> requires = new ArrayList<>(feature.requires());
+                    if (action.equals("adddependency")) {
+                        current.get(required);
+                        if (requires.contains(required)) throw new IllegalArgumentException("That dependency is already listed.");
+                        requires.add(required);
+                    } else if (!requires.remove(required)) throw new IllegalArgumentException("That dependency is not listed.");
+                    next.set(path + ".requires", requires);
                 }
                 case "addpermission", "removepermission" -> {
                     String node = Catalog.permission(args[2]);
@@ -334,6 +348,8 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
     }
 
     private void runPermissionCommands(CommandSender sender, String action, Target player, Catalog.Feature feature) {
+        if (action.equals("activate") && store.purchases(player.uuid()).stream().noneMatch(purchase -> purchase.donationId().equals(feature.id())))
+            throw new IllegalArgumentException(player.name() + " has no assigned donation for " + feature.id() + ". Assign it with /adddonation first.");
         String template = action.equals("activate") ? catalog.activateCommand : catalog.deactivateCommand;
         if (template.isEmpty()) throw new IllegalArgumentException("Set permission-commands." + action + " in config.yml, then run /mydonations reload.");
         if (feature.permissions().isEmpty()) throw new IllegalArgumentException("No permission nodes are configured for " + feature.id() + ".");
@@ -390,7 +406,8 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
     private void catalogHelp(CommandSender sender) {
         for (String usage : List.of("/donation activate PLAYER DONATIONID", "/donation deactivate PLAYER DONATIONID", "/donation top [PAGE]", "/donation total", "/donation list", "/donation info ID", "/donation create ID PRICE NAME...",
                 "/donation rename ID NAME...", "/donation price ID AMOUNT", "/donation repeatable ID true|false",
-                "/donation addpermission ID NODE", "/donation removepermission ID NODE"))
+                "/donation addpermission ID NODE", "/donation removepermission ID NODE",
+                "/donation adddependency ID REQUIRED_ID", "/donation removedependency ID REQUIRED_ID"))
             sender.sendMessage(Component.text(usage, NamedTextColor.YELLOW));
     }
 
@@ -407,6 +424,7 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
             if (!admin(sender)) return List.of();
             if (name.equals("adddonation") || name.equals("removedonation")) {
                 if (args.length == 1) choices = playerNames();
+                if (args.length == 3 && name.equals("adddonation")) choices = List.of("--override");
                 if (args.length == 2) {
                     choices = new ArrayList<>(catalog.features.keySet());
                     if (name.equals("removedonation")) {
@@ -419,13 +437,22 @@ public class DonationsPlugin extends JavaPlugin implements Listener {
                     choices = playerNames();
                 if (args.length == 3 && (args[0].equalsIgnoreCase("activate") || args[0].equalsIgnoreCase("deactivate")))
                     choices = new ArrayList<>(catalog.features.keySet());
-                if (args.length == 1) choices = List.of("activate", "deactivate", "top", "leaderboard", "total", "list", "info", "create", "rename", "price", "repeatable", "addpermission", "removepermission");
-                if (args.length == 2 && List.of("info", "rename", "price", "repeatable", "addpermission", "removepermission").contains(args[0].toLowerCase(Locale.ROOT)))
+                if (args.length == 1) choices = List.of("activate", "deactivate", "top", "leaderboard", "total", "list", "info", "create", "rename", "price", "repeatable", "addpermission", "removepermission", "adddependency", "removedependency");
+                if (args.length == 2 && List.of("info", "rename", "price", "repeatable", "addpermission", "removepermission", "adddependency", "removedependency").contains(args[0].toLowerCase(Locale.ROOT)))
                     choices = new ArrayList<>(catalog.features.keySet());
                 if (args.length == 2 && (args[0].equalsIgnoreCase("top") || args[0].equalsIgnoreCase("leaderboard")))
                     choices = java.util.stream.IntStream.rangeClosed(1, Math.max(1,
                             (store.leaderboard().size() + catalog.pageSize - 1) / catalog.pageSize))
                             .limit(100).mapToObj(Integer::toString).toList();
+                if (args.length == 3 && args[0].equalsIgnoreCase("adddependency")) {
+                    try {
+                        var feature = catalog.get(args[1]);
+                        choices = catalog.features.keySet().stream().filter(id -> !id.equals(feature.id()) && !feature.requires().contains(id)).toList();
+                    } catch (IllegalArgumentException ignored) { }
+                }
+                if (args.length == 3 && args[0].equalsIgnoreCase("removedependency")) {
+                    try { choices = catalog.get(args[1]).requires(); } catch (IllegalArgumentException ignored) { }
+                }
                 if (args.length == 3 && args[0].equalsIgnoreCase("repeatable")) choices = List.of("true", "false");
                 if (args.length == 3 && args[0].equalsIgnoreCase("removepermission")) {
                     try { choices = catalog.get(args[1]).permissions(); } catch (IllegalArgumentException ignored) { }

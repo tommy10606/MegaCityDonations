@@ -11,10 +11,10 @@ commands:
     usage: /mydonations [page|player [page]|reload|version]
   adddonation:
     description: Record a donation purchase (operator or console only).
-    usage: /adddonation PLAYER DONATIONID
+    usage: /adddonation PLAYER DONATIONID [--override]
   removedonation:
     description: Remove the latest matching purchase (operator or console only).
     usage: /removedonation PLAYER DONATIONID
   donation:
     description: View donation totals, top donors, activate permissions, or edit definitions (operator or console only).
-    usage: /donation <activate PLAYER ID|deactivate PLAYER ID|top [page]|total|list|info|create|rename|price|repeatable|addpermission|removepermission>
+    usage: /donation <activate PLAYER ID|deactivate PLAYER ID|top [page]|total|list|info|create|rename|price|repeatable|addpermission|removepermission|adddependency|removedependency>

@@ -81,7 +81,16 @@ final class DonationStore {
         if (existing != null && existing.name().equals(name)) return;
         commit(id, new Account(name, purchases(id)));
     }
+    void requirePrerequisites(UUID player, String name, Catalog.Feature feature) {
+        var owned = purchases(player).stream().map(Purchase::donationId).collect(java.util.stream.Collectors.toSet());
+        var missing = feature.requires().stream().filter(id -> !owned.contains(id)).toList();
+        if (!missing.isEmpty()) throw new IllegalArgumentException(name + " must first purchase: " + String.join(", ", missing) + " (required for " + feature.id() + ").");
+    }
     void add(UUID player, String name, Catalog.Feature feature) throws IOException {
+        add(player, name, feature, false);
+    }
+    void add(UUID player, String name, Catalog.Feature feature, boolean override) throws IOException {
+        if (!override) requirePrerequisites(player, name, feature);
         List<Purchase> records = new ArrayList<>(purchases(player));
         if (!feature.repeatable() && records.stream().anyMatch(record -> record.donationId().equals(feature.id())))
             throw new IllegalArgumentException(name + " already has " + feature.id() + "; repeat purchases are disabled for this ID.");

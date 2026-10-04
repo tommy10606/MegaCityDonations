@@ -12,6 +12,20 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class StorageTest {
+    @Test void catalogValidatesDependencyChainsAndRejectsMalformedListsAndMissingIds() throws Exception {
+        var yaml = new YamlConfiguration();
+        yaml.loadFromString("donations:\n  a:\n    price: '1'\n  b:\n    price: '2'\n    requires: [a]\n  c:\n    price: '3'\n    requires: [b]\n");
+        assertTrue(Catalog.parse(yaml).get("a").requires().isEmpty());
+        assertEquals(List.of("b"), Catalog.parse(yaml).get("c").requires());
+        for (Object required : List.of("a", List.of(1), List.of("missing"), List.of("c"))) {
+            yaml.set("donations.c.requires", required);
+            assertThrows(IllegalArgumentException.class, () -> Catalog.parse(yaml));
+        }
+        yaml.set("donations.c.requires", List.of("b"));
+        yaml.set("donations.a.requires", List.of("c"));
+        assertThrows(IllegalArgumentException.class, () -> Catalog.parse(yaml));
+    }
+
     @Test void permissionTemplatesDefaultCorrectlyAndRejectInvalidCommands() throws Exception {
         var yaml = new YamlConfiguration(); yaml.loadFromString("donations: {}\n");
         var defaults = Catalog.parse(yaml);

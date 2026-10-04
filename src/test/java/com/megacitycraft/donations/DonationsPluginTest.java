@@ -225,16 +225,18 @@ class DonationsPluginTest {
         yaml.set("permission-commands.activate", "customperms grant {uuid} {permission}");
         yaml.set("permission-commands.deactivate", "customperms revoke {player} {permission}");
         FilesSupport.write(path, yaml); run("mydonations reload");
+        run("adddonation Buyer feed");
         assertTrue(server.dispatchCommand(server.getConsoleSender(), "donation activate Buyer feed"));
         run("donation deactivate Buyer feed");
         assertEquals(List.of("grant " + buyer.getUniqueId() + " essentials.feed", "revoke Buyer essentials.feed"), calls);
-        assertEquals(0, records().purchases(buyer.getUniqueId()).size());
+        assertEquals(1, records().purchases(buyer.getUniqueId()).size());
         assertTrue(plugin.onTabComplete(admin, plugin.getCommand("donation"), "donation", new String[]{"activate", "Bu"}).contains("Buyer"));
         assertTrue(plugin.onTabComplete(admin, plugin.getCommand("donation"), "donation", new String[]{"deactivate", "Buyer", "nick"}).contains("nickname"));
     }
 
     @Test void permissionActionsReportMissingNodesDisabledActionsAndUnavailableCommands() throws Exception {
         var calls = captureConsoleCommands("manuaddp");
+        run("adddonation Buyer eff7"); run("adddonation Buyer nickname"); run("adddonation Buyer feed");
         run("donation activate Buyer eff7");
         assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("No permission nodes")));
         assertTrue(calls.isEmpty());
@@ -248,12 +250,88 @@ class DonationsPluginTest {
         run("donation activate Buyer feed");
         assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("Submitted 0/1")));
         assertTrue(calls.isEmpty());
+        assertEquals(3, records().purchases(buyer.getUniqueId()).size());
+    }
+
+    @Test void allDependenciesMustBeAssignedBeforePurchaseAndRemovalDoesNotEraseHistory() throws Exception {
+        run("donation adddependency diamondtool feed");
+        run("donation adddependency diamondtool nickname");
+        buyer.disconnect();
+        run("adddonation Buyer diamondtool");
         assertEquals(0, records().purchases(buyer.getUniqueId()).size());
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("must first purchase: feed, nickname")));
+        run("adddonation Buyer feed"); run("adddonation Buyer diamondtool");
+        assertEquals(1, records().purchases(buyer.getUniqueId()).size());
+        run("adddonation Buyer nickname"); run("adddonation Buyer diamondtool");
+        assertEquals(3, records().purchases(buyer.getUniqueId()).size());
+        run("removedonation Buyer feed");
+        assertTrue(records().purchases(buyer.getUniqueId()).stream().anyMatch(p -> p.donationId().equals("diamondtool")));
+        assertEquals(new BigDecimal("14.00"), records().total(buyer.getUniqueId()));
+        run("donation info diamondtool");
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.equals("Requires (all): feed, nickname")));
+    }
+
+    @Test void overrideMigratesAssignmentsButCannotBypassOpOrDuplicateRulesAndActivationNeedsOwnAssignment() throws Exception {
+        var calls = captureConsoleCommands("manuaddp");
+        var removals = captureConsoleCommands("manudelp");
+        run("donation adddependency nickname feed");
+        run("donation activate Buyer nickname");
+        assertTrue(calls.isEmpty());
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("no assigned donation")));
+        buyer.performCommand("adddonation Buyer nickname --override");
+        assertTrue(drain(buyer).stream().map(this::plain).anyMatch(line -> line.contains("Only operators")));
+        run("adddonation Buyer nickname --override");
+        assertEquals(1, records().purchases(buyer.getUniqueId()).size());
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("Dependency override used")));
+        run("adddonation Buyer nickname --override");
+        assertEquals(1, records().purchases(buyer.getUniqueId()).size());
+        run("donation activate Buyer nickname --override");
+        assertTrue(calls.isEmpty());
+        run("donation activate Buyer nickname");
+        assertEquals(3, calls.size()); // Assigned overrides can activate without their prerequisite.
+        run("removedonation Buyer nickname");
+        run("donation activate Buyer nickname");
+        assertEquals(3, calls.size());
+        run("donation deactivate Buyer nickname"); // Remains available for cleanup after removal.
+        assertEquals(3, removals.size());
+        assertTrue(plugin.onTabComplete(admin, plugin.getCommand("adddonation"), "adddonation", new String[]{"Buyer", "nickname", "--"}).contains("--override"));
+    }
+
+    @Test void dependencyCommandsPersistAndRejectUnknownSelfAndCircularDependencies() throws Exception {
+        run("donation adddependency nickname feed");
+        var path = plugin.getDataFolder().toPath().resolve("config.yml");
+        String before = Files.readString(path);
+        for (String command : List.of("donation adddependency feed nickname", "donation adddependency nickname nickname", "donation adddependency nickname nonexistent")) {
+            run(command); assertEquals(before, Files.readString(path));
+        }
+        run("mydonations reload");
+        assertEquals(List.of("feed"), Catalog.load(path).get("nickname").requires());
+        assertTrue(plugin.onTabComplete(admin, plugin.getCommand("donation"), "donation", new String[]{"removedependency", "nickname", ""}).contains("feed"));
+        buyer.performCommand("donation removedependency nickname feed");
+        assertTrue(drain(buyer).stream().map(this::plain).anyMatch(line -> line.contains("Only operators")));
+        assertEquals(before, Files.readString(path));
+        run("donation removedependency nickname feed");
+        assertTrue(Catalog.load(path).get("nickname").requires().isEmpty());
+        run("adddonation Buyer nickname");
+        assertEquals(1, records().purchases(buyer.getUniqueId()).size());
+    }
+
+    @Test void manualDependencyEditsApplyOnReloadAndCyclesPreserveLiveCatalog() throws Exception {
+        var path = plugin.getDataFolder().toPath().resolve("config.yml");
+        var yaml = FilesSupport.read(path); yaml.set("donations.nickname.requires", List.of("feed"));
+        FilesSupport.write(path, yaml); run("mydonations reload");
+        run("adddonation Buyer nickname");
+        assertTrue(records().purchases(buyer.getUniqueId()).isEmpty());
+        yaml.set("donations.feed.requires", List.of("nickname"));
+        FilesSupport.write(path, yaml); run("mydonations reload");
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.contains("Circular donation dependencies")));
+        run("adddonation Buyer feed"); run("adddonation Buyer nickname");
+        assertEquals(2, records().purchases(buyer.getUniqueId()).size());
     }
 
     @Test void activeVersionAndWebsiteAreCorrectAndVersionCommandRequiresOp() {
         run("mydonations version");
-        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.equals("MegaCityDonations v1.0.2")));
+        assertTrue(drain(admin).stream().map(this::plain).anyMatch(line -> line.equals("MegaCityDonations v1.0.3")));
         assertEquals("https://github.com/tommy10606/MegaCityDonations", plugin.getPluginMeta().getWebsite());
         assertTrue(server.dispatchCommand(server.getConsoleSender(), "mydonations version"));
         buyer.performCommand("mydonations version");

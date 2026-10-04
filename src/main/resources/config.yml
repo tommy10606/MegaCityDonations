@@ -19,11 +19,16 @@ permission-commands:
 
 # repeatable defaults to false if omitted. Nodes appear in hover text and
 # are also passed to the explicit activation/deactivation commands.
+# requires lists prerequisite donation IDs. Every listed ID must have a
+# recorded purchase before assigning this donation. Activation requires the
+# donation itself to be assigned, including assignments made with --override.
+# Omitted requires means no dependencies. Missing IDs and cycles are rejected.
 donations:
   nickname:
     name: Nickname
     price: '5.00'
     repeatable: false
+    requires: []
     permissions:
       - essentials.nick
       - essentials.nick.color
@@ -32,4 +37,5 @@ donations:
     name: Eff7
     price: '10.00'
     repeatable: true
+    requires: []
     permissions: []

@@ -14,7 +14,11 @@ import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 
 final class Catalog {
-    record Feature(String id, String name, BigDecimal price, boolean repeatable, List<String> permissions) { }
+    record Feature(String id, String name, BigDecimal price, boolean repeatable, List<String> permissions, List<String> requires) {
+        Feature(String id, String name, BigDecimal price, boolean repeatable, List<String> permissions) {
+            this(id, name, price, repeatable, permissions, List.of());
+        }
+    }
     final Map<String, Feature> features;
     final int pageSize;
     final Currency currency;
@@ -53,9 +57,37 @@ final class Catalog {
             if (nodes != null && (!(nodes instanceof List<?> list) || list.stream().anyMatch(node -> !(node instanceof String))))
                 throw new IllegalArgumentException("permissions must be a list of strings for " + id);
             List<String> permissions = feature.getStringList("permissions").stream().map(Catalog::permission).distinct().toList();
-            definitions.put(id, new Feature(id, name, price, feature.getBoolean("repeatable", false), permissions));
+            Object required = feature.get("requires");
+            if (required != null && (!(required instanceof List<?> list) || list.stream().anyMatch(value -> !(value instanceof String))))
+                throw new IllegalArgumentException("requires must be a list of donation IDs for " + id);
+            List<String> requires = feature.getStringList("requires").stream().map(Catalog::normalizeId).distinct().toList();
+            definitions.put(id, new Feature(id, name, price, feature.getBoolean("repeatable", false), permissions, requires));
         }
+        validateDependencies(definitions);
         features = Collections.unmodifiableMap(definitions);
+    }
+
+    private static void validateDependencies(Map<String, Feature> definitions) {
+        var remaining = new LinkedHashMap<String, Integer>();
+        var dependents = new LinkedHashMap<String, java.util.ArrayList<String>>();
+        for (var feature : definitions.values()) {
+            remaining.put(feature.id(), feature.requires().size());
+            for (String required : feature.requires()) {
+                if (!definitions.containsKey(required)) throw new IllegalArgumentException("Unknown prerequisite " + required + " for " + feature.id() + ".");
+                if (required.equals(feature.id())) throw new IllegalArgumentException("A donation ID cannot require itself: " + required);
+                dependents.computeIfAbsent(required, ignored -> new java.util.ArrayList<>()).add(feature.id());
+            }
+        }
+        var ready = new java.util.ArrayDeque<String>();
+        remaining.forEach((id, count) -> { if (count == 0) ready.add(id); });
+        int visited = 0;
+        while (!ready.isEmpty()) {
+            String id = ready.remove(); visited++;
+            for (String dependent : dependents.getOrDefault(id, new java.util.ArrayList<>())) {
+                if (remaining.compute(dependent, (key, count) -> count - 1) == 0) ready.add(dependent);
+            }
+        }
+        if (visited != definitions.size()) throw new IllegalArgumentException("Circular donation dependencies detected. Remove the cycle before saving or reloading.");
     }
 
     static Catalog load(Path file) throws IOException, InvalidConfigurationException {
