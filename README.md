@@ -5,6 +5,8 @@ purchased features, the amount paid for each purchase, and their total donations
 The plugin tracks payments and supports explicit operator-run permission activation.
 It does not process payments. Recording or removing a purchase never runs commands automatically.
 
+Known working versions: PaperMC 26.2, 26.3
+
 ## Install
 
 Stop the server, place `MegaCityDonations-1.0.3.jar` in `plugins/`, and start it.
